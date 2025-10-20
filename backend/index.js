@@ -3,8 +3,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const Anthropic = require('@anthropic-ai/sdk');
-const axios = require('axios');
-const cheerio = require('cheerio');
+const puppeteer =require('puppeteer');
 
 const app = express();
 const port = 5000;
@@ -29,6 +28,23 @@ const isUrl = (string) => {
   }
 };
 
+async function scrapeContent(url) {
+  const browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox', '--disable-setuid-sandbox'] });
+  const page = await browser.newPage();
+  await page.goto(url, { waitUntil: 'networkidle2' });
+
+  let content = await page.evaluate(() => {
+    const mainContent = document.querySelector('main');
+    return mainContent ? mainContent.innerText : document.body.innerText;
+  });
+
+  await browser.close();
+
+  // Clean up and truncate the content
+  content = content.replace(/\s\s+/g, ' ').trim();
+  return content.substring(0, 4000);
+}
+
 app.post('/generate-quiz', async (req, res) => {
   try {
     let { inputText, numQuestions } = req.body;
@@ -38,31 +54,38 @@ app.post('/generate-quiz', async (req, res) => {
     }
 
     if (isUrl(inputText)) {
-      const response = await axios.get(inputText);
-      const $ = cheerio.load(response.data);
-      inputText = $('body').text(); // A simple approach to get all text
+      inputText = await scrapeContent(inputText);
     }
+
+    const prompt = `Based on the text below, generate a valid JSON array of ${numQuestions || 5} multiple-choice questions. Each object in the array must have a "question" string, an "options" array of 4 strings, and an "answer" string that matches one of the options. Ensure the entire output is a single, complete, and valid JSON array.
+
+Text: "${inputText}"`;
 
     const msg = await anthropic.messages.create({
       model: "claude-3-haiku-20240307",
-      max_tokens: 1024,
-      messages: [{ role: "user", content: `Create a multiple choice quiz with ${numQuestions || 5} questions based on the following text. Each question should have 4 options, with only one correct answer. Format the output as a JSON array of objects, where each object has "question", "options" (an array of strings), and "answer" (the correct option string). Only return the JSON array, with no other text or explanation. Text: ${inputText}` }],
+      max_tokens: 2048,
+      messages: [{ role: "user", content: prompt }],
     });
 
-    // Use a regex to find and parse the JSON array from the response
     const responseText = msg.content[0].text;
-    const jsonMatch = responseText.match(/(\[[\s\S]*\])/);
 
-    if (jsonMatch && jsonMatch[0]) {
+    // Find the start and end of the JSON array
+    const startIndex = responseText.indexOf('[');
+    const endIndex = responseText.lastIndexOf(']');
+
+    if (startIndex !== -1 && endIndex !== -1 && endIndex > startIndex) {
+      const jsonString = responseText.substring(startIndex, endIndex + 1);
       try {
-        const quiz = JSON.parse(jsonMatch[0]);
+        const quiz = JSON.parse(jsonString);
         res.json(quiz);
       } catch (parseError) {
         console.error('Failed to parse JSON from response:', parseError);
+        console.error('Extracted JSON String:', jsonString);
         res.status(500).json({ error: 'Failed to parse quiz data from AI response.' });
       }
     } else {
       console.error('No JSON array found in the AI response.');
+      console.error('AI Response Text:', responseText);
       res.status(500).json({ error: 'No quiz data found in AI response.' });
     }
 
