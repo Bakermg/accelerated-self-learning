@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useSelector, useDispatch } from 'react-redux';
 import {
   Container,
   Typography,
@@ -12,22 +13,31 @@ import {
   FormControlLabel,
   FormControl,
 } from '@mui/material';
-
-interface QuizQuestion {
-  question: string;
-  options: string[];
-  answer: string;
-}
+import {
+  setQuestions,
+  selectAnswer,
+  submitQuiz,
+  practiceWrongAnswers,
+} from './features/quiz/quizSlice';
+import { useGenerateQuizMutation } from './features/api/apiSlice';
+import { RootState } from './app/store';
 
 function App() {
+  const dispatch = useDispatch();
+  const { questions, selectedAnswers, score, submitted, wrongAnswers } = useSelector(
+    (state: RootState) => state.quiz
+  );
+
   const [inputText, setInputText] = useState('');
-  const [quiz, setQuiz] = useState<QuizQuestion[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedAnswers, setSelectedAnswers] = useState<Record<number, string>>({});
-  const [score, setScore] = useState<number | null>(null);
-  const [submitted, setSubmitted] = useState(false);
   const [numQuestions, setNumQuestions] = useState(5);
+
+  const [generateQuiz, { data: quizData, isLoading, error }] = useGenerateQuizMutation();
+
+  useEffect(() => {
+    if (quizData) {
+      dispatch(setQuestions(quizData));
+    }
+  }, [quizData, dispatch]);
 
   const handleInputChange = (event: React.ChangeEvent<HTMLInputElement>) => {
     setInputText(event.target.value);
@@ -37,59 +47,27 @@ function App() {
     setNumQuestions(parseInt(event.target.value, 10));
   };
 
-  const generateQuiz = async () => {
-    setLoading(true);
-    setError(null);
-    setQuiz([]);
-    setSelectedAnswers({});
-    setScore(null);
-    setSubmitted(false);
-
-    try {
-      const response = await fetch('http://localhost:5000/generate-quiz', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ inputText, numQuestions }),
-      });
-
-      if (!response.ok) {
-        throw new Error('Failed to generate quiz');
-      }
-
-      const data = await response.json();
-      setQuiz(data);
-    } catch (err) {
-      setError('An error occurred while generating the quiz. Please try again.');
-    } finally {
-      setLoading(false);
-    }
+  const handleGenerateQuiz = () => {
+    generateQuiz({ inputText, numQuestions });
   };
 
   const handleAnswerChange = (questionIndex: number, answer: string) => {
-    setSelectedAnswers({
-      ...selectedAnswers,
-      [questionIndex]: answer,
-    });
+    dispatch(selectAnswer({ questionIndex, answer }));
   };
 
   const handleSubmitQuiz = () => {
-    let correctAnswers = 0;
-    quiz.forEach((q, index) => {
-      if (selectedAnswers[index] === q.answer) {
-        correctAnswers++;
-      }
-    });
-    setScore(correctAnswers);
-    setSubmitted(true);
+    dispatch(submitQuiz());
+  };
+
+  const handlePracticeWrongAnswers = () => {
+    dispatch(practiceWrongAnswers());
   };
 
   const getOptionStyle = (option: string, questionIndex: number) => {
     if (!submitted) {
       return {};
     }
-    const question = quiz[questionIndex];
+    const question = questions[questionIndex];
     const isCorrect = option === question.answer;
     const isSelected = selectedAnswers[questionIndex] === option;
 
@@ -125,15 +103,15 @@ function App() {
           onChange={handleNumQuestionsChange}
           sx={{ mb: 2, width: '200px' }}
         />
-        <Button variant="contained" onClick={generateQuiz} disabled={loading}>
-          {loading ? <CircularProgress size={24} /> : 'Generate Quiz'}
+        <Button variant="contained" onClick={handleGenerateQuiz} disabled={isLoading}>
+          {isLoading ? <CircularProgress size={24} /> : 'Generate Quiz'}
         </Button>
 
-        {error && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
+        {error && <Alert severity="error" sx={{ mt: 2 }}>An error occurred while generating the quiz. Please try again.</Alert>}
 
-        {quiz.length > 0 && (
+        {questions.length > 0 && (
           <Box sx={{ mt: 4 }}>
-            {quiz.map((q, index) => (
+            {questions.map((q, index) => (
               <FormControl component="fieldset" key={index} sx={{ mb: 2 }}>
                 <Typography variant="h6">{q.question}</Typography>
                 <RadioGroup
@@ -155,13 +133,22 @@ function App() {
                 </RadioGroup>
               </FormControl>
             ))}
-            <Button variant="contained" color="secondary" onClick={handleSubmitQuiz} disabled={submitted}>
-              Submit Quiz
-            </Button>
-            {score !== null && (
-              <Typography variant="h6" sx={{ mt: 2 }}>
-                Your score: {score} / {quiz.length}
-              </Typography>
+            {!submitted && (
+                <Button variant="contained" color="secondary" onClick={handleSubmitQuiz}>
+                Submit Quiz
+                </Button>
+            )}
+            {submitted && (
+              <Box>
+                <Typography variant="h6" sx={{ mt: 2 }}>
+                  Your score: {score} / {questions.length}
+                </Typography>
+                {wrongAnswers.length > 0 && (
+                  <Button variant="contained" onClick={handlePracticeWrongAnswers} sx={{ mt: 2 }}>
+                    Practice Wrong Answers
+                  </Button>
+                )}
+              </Box>
             )}
           </Box>
         )}

@@ -49,16 +49,21 @@ app.post('/generate-quiz', async (req, res) => {
       messages: [{ role: "user", content: `Create a multiple choice quiz with ${numQuestions || 5} questions based on the following text. Each question should have 4 options, with only one correct answer. Format the output as a JSON array of objects, where each object has "question", "options" (an array of strings), and "answer" (the correct option string). Only return the JSON array, with no other text or explanation. Text: ${inputText}` }],
     });
 
-    // Extract the JSON from the response string
+    // Use a regex to find and parse the JSON array from the response
     const responseText = msg.content[0].text;
-    const jsonStartIndex = responseText.indexOf('[');
+    const jsonMatch = responseText.match(/(\[[\s\S]*\])/);
 
-    if (jsonStartIndex !== -1) {
-      const jsonString = responseText.substring(jsonStartIndex);
-      const quiz = JSON.parse(jsonString);
-      res.json(quiz);
+    if (jsonMatch && jsonMatch[0]) {
+      try {
+        const quiz = JSON.parse(jsonMatch[0]);
+        res.json(quiz);
+      } catch (parseError) {
+        console.error('Failed to parse JSON from response:', parseError);
+        res.status(500).json({ error: 'Failed to parse quiz data from AI response.' });
+      }
     } else {
-      throw new Error('No JSON array found in the response.');
+      console.error('No JSON array found in the AI response.');
+      res.status(500).json({ error: 'No quiz data found in AI response.' });
     }
 
   } catch (error) {
