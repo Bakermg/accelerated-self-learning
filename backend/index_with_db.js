@@ -17,14 +17,21 @@ const {
   sanitizeQuizData,
 } = require('./utils/sanitizer');
 
+// Import database
+const { testConnection } = require('./config/database');
+
 // Import middleware
 const { apiLimiter, quizGenerationLimiter } = require('./middleware/rateLimiter');
 const {
   AppError,
   errorHandler,
   asyncHandler,
+  notFound,
 } = require('./middleware/errorHandler');
 const { validateQuizGeneration } = require('./validators/quizValidator');
+
+// Import routes
+const quizRoutes = require('./routes/quizRoutes');
 
 const app = express();
 
@@ -77,7 +84,7 @@ app.use(requestLogger);
 // Apply general rate limiting to all routes
 app.use(apiLimiter);
 
-// Health check endpoint
+// Health check endpoint (no rate limiting)
 app.get('/health', (req, res) => {
   res.status(200).json({
     status: 'ok',
@@ -90,28 +97,58 @@ app.get('/health', (req, res) => {
 app.get('/', (req, res) => {
   res.json({
     message: 'AI Study Quiz API',
-    version: '3.0.0',
+    version: '2.0.0',
     endpoints: {
+      health: '/health',
       generateQuiz: 'POST /generate-quiz',
-      health: 'GET /health',
+      quizzes: '/api/quizzes',
     },
   });
 });
 
-// Web scraping function
-const scrapeUrl = async (url) => {
+// Mount quiz routes
+app.use('/api/quizzes', quizRoutes);
+
+// Helper function to check if string is a URL
+const isUrl = (string) => {
+  try {
+    const url = new URL(string);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch (_) {
+    return false;
+  }
+};
+
+// Web scraping function with security improvements
+async function scrapeContent(url) {
   let browser;
   try {
-    logger.info('Starting web scraping', { url });
+    // Validate and sanitize URL
+    const sanitizedUrl = sanitizeUrl(url);
+    if (!sanitizedUrl) {
+      throw new AppError('Invalid URL provided', 400);
+    }
+
+    logger.info('Starting web scraping', { url: sanitizedUrl });
 
     browser = await puppeteer.launch({
-      headless: 'new',
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      headless: true,
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-web-security',
+        '--disable-features=IsolateOrigins,site-per-process',
+      ],
     });
 
     const page = await browser.newPage();
 
-    // Block unnecessary resources to speed up scraping
+    // Set user agent
+    await page.setUserAgent(
+      'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    );
+
+    // Block unnecessary resources to speed up loading
     await page.setRequestInterception(true);
     page.on('request', (request) => {
       const resourceType = request.resourceType();
@@ -122,80 +159,66 @@ const scrapeUrl = async (url) => {
       }
     });
 
-    await page.goto(url, {
+    // Navigate to URL with timeout
+    await page.goto(sanitizedUrl, {
       waitUntil: 'networkidle2',
       timeout: config.scrapingTimeout,
     });
 
-    // Try multiple selectors to extract main content
-    const content = await page.evaluate(() => {
-      // List of common content selectors
+    // Extract content
+    let content = await page.evaluate(() => {
       const selectors = [
-        'article',
         'main',
+        'article',
         '[role="main"]',
         '.content',
-        '.main-content',
         '#content',
-        '#main-content',
         '.post-content',
         '.entry-content',
+        'body',
       ];
 
       for (const selector of selectors) {
         const element = document.querySelector(selector);
-        if (element) {
-          return element.textContent;
+        if (element && element.innerText.length > 100) {
+          return element.innerText;
         }
       }
-
-      // Fallback to body if no specific content container found
-      return document.body.textContent;
+      return document.body.innerText;
     });
 
     await browser.close();
 
-    if (!content || content.trim().length === 0) {
-      throw new AppError('No content found at the provided URL', 400);
+    // Sanitize scraped content
+    content = sanitizeScrapedContent(content);
+
+    if (content.length < 50) {
+      throw new AppError('Insufficient content extracted from URL', 400);
     }
-
-    // Clean up the content
-    const cleanedContent = content
-      .replace(/\s+/g, ' ')
-      .replace(/\n\s*\n/g, '\n')
-      .trim();
-
-    // Limit content length
-    const limitedContent = cleanedContent.substring(0, config.maxContentLength);
 
     logger.info('Successfully scraped content', {
-      url,
-      length: limitedContent.length,
+      url: sanitizedUrl,
+      length: content.length,
     });
 
-    return sanitizeScrapedContent(limitedContent);
+    // Limit content length
+    return content.substring(0, config.maxContentLength);
   } catch (error) {
-    if (browser) {
-      await browser.close();
-    }
+    if (browser) await browser.close();
+    logger.error('Error scraping URL', { error: error.message, url });
 
-    logger.error('Web scraping failed', {
-      url,
-      error: error.message,
-    });
-
-    if (error.name === 'TimeoutError') {
-      throw new AppError('The webpage took too long to load. Please try a different URL.', 408);
+    if (error instanceof AppError) {
+      throw error;
     }
 
     throw new AppError(
-      error.message || 'Failed to scrape content from URL',
-      error.statusCode || 500
+      `Failed to scrape content from URL: ${error.message}`,
+      500
     );
   }
-};
+}
 
-// Quiz Generation Endpoint
+// Quiz generation endpoint with validation and rate limiting
 app.post(
   '/generate-quiz',
   quizGenerationLimiter,
@@ -207,23 +230,23 @@ app.post(
       provider,
       difficulty,
       numQuestions,
-      isUrl: inputText.startsWith('http://') || inputText.startsWith('https://'),
+      isUrl: isUrl(inputText),
     });
 
-    // Sanitize inputs
-    inputText = sanitizeText(inputText);
-    apiKey = sanitizeText(apiKey);
-
-    // Check if input is a URL
-    const isUrl = inputText.startsWith('http://') || inputText.startsWith('https://');
-
-    if (isUrl) {
-      inputText = sanitizeUrl(inputText);
-      // Scrape content from URL
-      inputText = await scrapeUrl(inputText);
+    // Check if input is a URL and scrape if needed
+    if (isUrl(inputText)) {
+      inputText = await scrapeContent(inputText);
+    } else {
+      // Sanitize text input
+      inputText = sanitizeText(inputText);
     }
 
-    // Prepare the prompt for the AI model
+    // Ensure we have sufficient content
+    if (inputText.length < 10) {
+      throw new AppError('Input text is too short to generate a quiz', 400);
+    }
+
+    // Define difficulty-specific instructions
     const difficultyInstructions = {
       easy: 'Focus on basic concepts, simple recall questions, and straightforward definitions. Make questions accessible for beginners.',
       moderate:
@@ -321,85 +344,121 @@ Text: "${inputText}"`;
 
     // Clean up common JSON issues
     jsonString = jsonString
-      .replace(/[\u201C\u201D]/g, '"') // curly double quotes
+      .replace(/[\u201C\u201D]/g, "'") // curly double quotes
       .replace(/[\u2018\u2019]/g, "'") // curly single quotes
-      .replace(/[\u201E\u201F\u2033\u2036\u201A\u201B\u2032\u2035]/g, "'"); // other quotes
+      .replace(/[\u201E\u201F\u2033\u2036\u201A\u201B\u2032\u2035]/g, "'") // other quotes
+      .replace(/^\uFEFF/, ''); // BOM
 
-    let questions;
     try {
-      questions = JSON.parse(jsonString);
-    } catch (parseError) {
-      logger.error('Failed to parse quiz JSON', {
-        error: parseError.message,
-        jsonString,
+      let quiz = JSON.parse(jsonString);
+
+      // Validate quiz structure
+      if (!Array.isArray(quiz)) {
+        throw new Error('Quiz data is not an array');
+      }
+
+      // Validate each question
+      quiz = quiz.filter((q) => {
+        return (
+          q.question &&
+          Array.isArray(q.options) &&
+          q.options.length === 4 &&
+          q.answer &&
+          q.explanation
+        );
       });
-      throw new AppError(
-        'Failed to parse quiz data. Please try again.',
-        500
-      );
+
+      if (quiz.length === 0) {
+        throw new Error('No valid questions found in quiz data');
+      }
+
+      // Sanitize quiz data to prevent XSS
+      const sanitizedQuiz = sanitizeQuizData(quiz);
+
+      logger.info('Quiz generated successfully', {
+        provider,
+        questionsCount: sanitizedQuiz.length,
+      });
+
+      res.json(sanitizedQuiz);
+    } catch (parseError) {
+      logger.error('Failed to parse JSON from AI response', {
+        error: parseError.message,
+      });
+
+      // Try to fix common JSON errors
+      try {
+        const fixedJson = jsonString.replace(/,(\s*[}\]])/g, '$1');
+        let quiz = JSON.parse(fixedJson);
+        const sanitizedQuiz = sanitizeQuizData(quiz);
+
+        if (sanitizedQuiz.length === 0) {
+          throw new Error('No valid questions after sanitization');
+        }
+
+        res.json(sanitizedQuiz);
+      } catch (secondError) {
+        logger.error('Second parse attempt failed', {
+          error: secondError.message,
+        });
+        throw new AppError(
+          'Failed to parse quiz data from AI response. Please try again.',
+          500
+        );
+      }
     }
-
-    // Validate the structure
-    if (!Array.isArray(questions) || questions.length === 0) {
-      throw new AppError('Invalid quiz format received.', 500);
-    }
-
-    // Sanitize quiz data
-    const sanitizedQuestions = sanitizeQuizData(questions);
-
-    logger.info('Quiz generated successfully', {
-      provider,
-      questionsCount: sanitizedQuestions.length,
-    });
-
-    res.status(200).json(sanitizedQuestions);
   })
 );
 
 // 404 handler
-app.use((req, res) => {
-  res.status(404).json({
-    error: 'Not found',
-    message: `Route ${req.method} ${req.path} not found`,
+app.use(notFound);
+
+// Global error handler
+app.use(errorHandler);
+
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM signal received: closing HTTP server');
+  server.close(() => {
+    logger.info('HTTP server closed');
+    process.exit(0);
   });
 });
 
-// Error handling middleware (must be last)
-app.use(errorHandler);
+process.on('SIGINT', () => {
+  logger.info('SIGINT signal received: closing HTTP server');
+  server.close(() => {
+    logger.info('HTTP server closed');
+    process.exit(0);
+  });
+});
 
-// Start server
-const PORT = config.port;
+// Initialize database and start server
+let server;
 
 async function startServer() {
   try {
-    const server = app.listen(PORT, () => {
-      logger.info(`Server running on port ${PORT}`, {
+    // Test database connection
+    const dbConnected = await testConnection();
+    if (!dbConnected) {
+      logger.warn('Database connection failed. Server will start but database features will be unavailable.');
+    }
+
+    // Start server
+    server = app.listen(config.port, () => {
+      logger.info(`Server running on port ${config.port}`, {
         environment: config.nodeEnv,
         corsOrigin: config.corsOrigin,
+        databaseStatus: dbConnected ? 'connected' : 'disconnected',
       });
     });
-
-    // Graceful shutdown
-    const shutdown = async () => {
-      logger.info('Received shutdown signal, closing server gracefully...');
-      server.close(() => {
-        logger.info('Server closed');
-        process.exit(0);
-      });
-
-      // Force close after 10s
-      setTimeout(() => {
-        logger.error('Forcefully shutting down');
-        process.exit(1);
-      }, 10000);
-    };
-
-    process.on('SIGTERM', shutdown);
-    process.on('SIGINT', shutdown);
   } catch (error) {
     logger.error('Failed to start server', { error: error.message });
     process.exit(1);
   }
 }
 
+// Start the server
 startServer();
+
+module.exports = app;

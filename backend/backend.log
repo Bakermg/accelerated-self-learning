@@ -1,2 +1,51 @@
-[dotenv@17.2.3] injecting env (1) from .env -- tip: 🔄 add secrets lifecycle management: https://dotenvx.com/ops
-Server is running on port 5000
+[dotenv@17.2.3] injecting env (11) from .env -- tip: 🛠️  run anywhere with `dotenvx run -- yourcommand`
+[INFO] Server running on port 5001 {
+  environment: 'development',
+  corsOrigin: [ 'http://localhost:3000', 'http://localhost:3001' ]
+}
+GET /health [32m200[0m 11.812 ms - 76
+[INFO] Quiz generation request {
+  provider: 'openai',
+  difficulty: 'moderate',
+  numQuestions: 5,
+  isUrl: true
+}
+[INFO] Starting web scraping {
+  url: 'https://medium.com/@ignatovich.dm/api-layer-in-next-js-why-its-important-how-to-use-it-and-best-practices-4b954cb9db00'
+}
+[INFO] Successfully scraped content {
+  url: 'https://medium.com/@ignatovich.dm/api-layer-in-next-js-why-its-important-how-to-use-it-and-best-practices-4b954cb9db00',
+  length: 300
+}
+[INFO] Quiz generated successfully { provider: 'openai', questionsCount: 5 }
+POST /generate-quiz [32m200[0m 14516.375 ms - -
+[INFO] Quiz generation request {
+  provider: 'openai',
+  difficulty: 'moderate',
+  numQuestions: 5,
+  isUrl: true
+}
+[INFO] Starting web scraping {
+  url: 'https://medium.com/@ignatovich.dm/api-layer-in-next-js-why-its-important-how-to-use-it-and-best-practices-4b954cb9db00'
+}
+[INFO] Successfully scraped content {
+  url: 'https://medium.com/@ignatovich.dm/api-layer-in-next-js-why-its-important-how-to-use-it-and-best-practices-4b954cb9db00',
+  length: 300
+}
+[INFO] Quiz generated successfully { provider: 'openai', questionsCount: 5 }
+POST /generate-quiz [32m200[0m 9314.947 ms - -
+[INFO] Quiz generation request {
+  provider: 'openai',
+  difficulty: 'moderate',
+  numQuestions: 5,
+  isUrl: true
+}
+[INFO] Starting web scraping {
+  url: 'https://medium.com/@ignatovich.dm/api-layer-in-next-js-why-its-important-how-to-use-it-and-best-practices-4b954cb9db00'
+}
+[INFO] Successfully scraped content {
+  url: 'https://medium.com/@ignatovich.dm/api-layer-in-next-js-why-its-important-how-to-use-it-and-best-practices-4b954cb9db00',
+  length: 300
+}
+[INFO] Quiz generated successfully { provider: 'openai', questionsCount: 5 }
+POST /generate-quiz [32m200[0m 9711.613 ms - -
